@@ -26,25 +26,59 @@
     }
     .stat { background: rgba(255,255,255,0.2); padding: 15px; border-radius: 12px; }
     .stat-value { font-size: 2em; color: #ffd700; }
+
+    /* Button Row - Single Row with Horizontal Scroll */
     .button-row {
       display: flex;
       justify-content: center;
-      flex-wrap: wrap;
       gap: 10px;
       margin: 20px 0;
+      overflow-x: auto;
+      padding: 5px 10px;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.3) transparent;
     }
+
+    .button-row::-webkit-scrollbar {
+      height: 6px;
+    }
+
+    .button-row::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.3);
+      border-radius: 10px;
+    }
+
+    .button-row::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
     button { 
-      padding: 15px 30px; font-size: 1.1em; background: linear-gradient(45deg, #00c851, #007e33); 
-      color: white; border: none; border-radius: 25px; cursor: pointer; font-weight: 600; 
-      box-shadow: 0 5px 15px rgba(0,0,0,0.2); transition: all 0.3s;
+      padding: 15px 25px; 
+      font-size: 1.1em; 
+      background: linear-gradient(45deg, #00c851, #007e33); 
+      color: white; 
+      border: none; 
+      border-radius: 25px; 
+      cursor: pointer; 
+      font-weight: 600; 
+      box-shadow: 0 5px 15px rgba(0,0,0,0.2); 
+      transition: all 0.3s;
+      min-width: 120px;
+      flex-shrink: 0; /* Prevent shrinking */
     }
+
     button:hover:not(:disabled) { 
       transform: translateY(-2px); 
       box-shadow: 0 8px 25px rgba(0,0,0,0.3); 
     }
+
     button:disabled { 
-      background: #666; cursor: not-allowed; transform: none; 
+      background: #666; 
+      cursor: not-allowed; 
+      transform: none; 
     }
+
     #status { 
       padding: 15px; border-radius: 10px; margin: 20px 0; font-size: 1.1em; 
       min-height: 20px; font-weight: 500;
@@ -53,15 +87,22 @@
     .warn { color: #ffaa00; background: rgba(255,170,0,0.2); }
     .error { color: #ff4444; background: rgba(255,68,68,0.3); }
     
-    /* Mobile responsiveness */
+    /* Mobile responsiveness for video/canvas */
     @media (max-width: 700px) { 
       #video, #signalCanvas { 
         width: 100%; max-width: 400px; height: auto; aspect-ratio: 4/3; 
       }
-      .button-row button {
-        padding: 12px 16px;
-        font-size: 1em;
-        min-width: 120px;
+    }
+
+    /* Smaller buttons on very narrow screens */
+    @media (max-width: 480px) {
+      .button-row {
+        padding: 5px 5px;
+      }
+      button {
+        padding: 12px 18px;
+        font-size: 0.95em;
+        min-width: 100px;
       }
     }
   </style>

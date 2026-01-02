@@ -4,9 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>rPPG BP + HR/HRV Estimator (Demo)</title>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4/face_detection.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+  <!-- Load TensorFlow.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.18.0/dist/tf.min.js"></script>
+  <!-- Load TensorFlow.js Face Detection (wrapper) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-detection@1.1.0/dist/face-detection.min.js"></script>
+  <!-- MediaPipe is loaded automatically as a dependency by face-detection -->
   <style>
     body { 
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
@@ -27,7 +29,6 @@
     .stat { background: rgba(255,255,255,0.2); padding: 15px; border-radius: 12px; }
     .stat-value { font-size: 2em; color: #ffd700; }
 
-    /* Button Row - Single Row with Horizontal Scroll */
     .button-row {
       display: flex;
       justify-content: center;
@@ -65,7 +66,7 @@
       box-shadow: 0 5px 15px rgba(0,0,0,0.2); 
       transition: all 0.3s;
       min-width: 120px;
-      flex-shrink: 0; /* Prevent shrinking */
+      flex-shrink: 0;
     }
 
     button:hover:not(:disabled) { 
@@ -87,14 +88,12 @@
     .warn { color: #ffaa00; background: rgba(255,170,0,0.2); }
     .error { color: #ff4444; background: rgba(255,68,68,0.3); }
     
-    /* Mobile responsiveness for video/canvas */
     @media (max-width: 700px) { 
       #video, #signalCanvas { 
         width: 100%; max-width: 400px; height: auto; aspect-ratio: 4/3; 
       }
     }
 
-    /* Smaller buttons on very narrow screens */
     @media (max-width: 480px) {
       .button-row {
         padding: 5px 5px;
@@ -294,10 +293,9 @@
       };
     }
 
-    // Toy BP model (replace with tf.loadLayersModel)
+    // Toy BP model
     function estimateBP(vitals) {
       if (vitals.quality < 50) return {sbp: '--', dbp: '--'};
-      // Linear proxy (calibrate with real data)
       const sbp = Math.round(95 + vitals.hr*0.4 + vitals.sdnn*0.1);
       const dbp = Math.round(62 + vitals.hr*0.25 + vitals.rmssd*0.05);
       return {sbp: Math.max(90, sbp), dbp: Math.max(60, dbp)};
@@ -312,37 +310,51 @@
       if (!faces.length) {
         document.getElementById('status').className = 'warn'; 
         document.getElementById('status').textContent = '👀 Face not detected';
+        requestAnimationFrame(processFrame);
         return;
       }
 
-      const face = faces[0].bbox;
-      const rx = face.xMin + ROI_FRAC.x*face.width;
-      const ry = face.yMin + ROI_FRAC.y*face.height;
-      const rw = ROI_FRAC.w*face.width, rh = ROI_FRAC.h*face.height;
+      const face = faces[0].box;
+      const rx = face.xMin + ROI_FRAC.x * face.width;
+      const ry = face.yMin + ROI_FRAC.y * face.height;
+      const rw = ROI_FRAC.w * face.width;
+      const rh = ROI_FRAC.h * face.height;
 
       const imgData = ctx.getImageData(rx, ry, rw, rh);
-      let r=0,g=0,b=0,npix=0;
+      let r = 0, g = 0, b = 0, npix = 0;
       const data = imgData.data;
-      for (let i=0; i<data.length; i+=4) { r+=data[i]; g+=data[i+1]; b+=data[i+2]; npix++; }
-      const chrom = extractCHROM(r/(npix*255), g/(npix*255), b/(npix*255));
+      for (let i = 0; i < data.length; i += 4) {
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        npix++;
+      }
+      const chrom = extractCHROM(r / (npix * 255), g / (npix * 255), b / (npix * 255));
 
       rawBuffer.push(chrom);
       if (rawBuffer.length > 60) rawBuffer.shift();
       const processed = preprocessRPPG(rawBuffer);
-      rppgBuffer.push(processed[processed.length-1]);
+      rppgBuffer.push(processed[processed.length - 1]);
       if (rppgBuffer.length > BUFFER_LEN) rppgBuffer.shift();
 
       // Draw ROI
-      ctx.strokeStyle = '#00ff88'; ctx.lineWidth=4; ctx.lineCap='round';
+      ctx.strokeStyle = '#00ff88';
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
       ctx.strokeRect(rx, ry, rw, rh);
 
       // Signal plot
-      signalCtx.clearRect(0,0,640,180);
-      signalCtx.strokeStyle='#00ff88'; signalCtx.lineWidth=2;
+      signalCtx.clearRect(0, 0, signalCanvas.width, signalCanvas.height);
+      signalCtx.strokeStyle = '#00ff88';
+      signalCtx.lineWidth = 2;
       signalCtx.beginPath();
-      const scale=60, off=90;
-      for (let i=0; i<rppgBuffer.length; i++) {
-        signalCtx.lineTo(i*640/BUFFER_LEN, off - rppgBuffer[i]*scale);
+      const scale = 60;
+      const off = signalCanvas.height / 2;
+      for (let i = 0; i < rppgBuffer.length; i++) {
+        const x = (i / BUFFER_LEN) * signalCanvas.width;
+        const y = off - rppgBuffer[i] * scale;
+        if (i === 0) signalCtx.moveTo(x, y);
+        else signalCtx.lineTo(x, y);
       }
       signalCtx.stroke();
 
@@ -353,68 +365,73 @@
         document.getElementById('sdnn').textContent = vitals.sdnn;
         document.getElementById('rmssd').textContent = vitals.rmssd;
         document.getElementById('quality').textContent = vitals.quality;
-        document.getElementById('status').className = vitals.quality>70 ? 'good' : 'warn';
+        document.getElementById('status').className = vitals.quality > 70 ? 'good' : 'warn';
         document.getElementById('status').textContent = 
           `✅ Tracking | Peaks: ${vitals.rrCount || 0} | Buffer: ${rppgBuffer.length}`;
       }
+
+      requestAnimationFrame(processFrame);
     }
 
-    // Permission-safe start
-    async function checkPermission() {
-      if (!navigator.permissions?.query) return 'prompt';
-      try {
-        const p = await navigator.permissions.query({name: 'camera'});
-        return p.state;
-      } catch { return 'prompt'; }
-    }
-
-    let rafId;
+    // Start camera and face detector
     document.getElementById('startBtn').onclick = async () => {
-      const state = await checkPermission();
-      if (state === 'denied') {
-        document.getElementById('status').className = 'error';
-        document.getElementById('status').innerHTML = 
-          '🚫 <strong>Camera blocked</strong><br>Click 🔒 site icon → Camera → Allow → Refresh';
-        return;
-      }
-
       try {
+        // Request camera
         stream = await navigator.mediaDevices.getUserMedia({
-          video: {width: {ideal:640}, height: {ideal:480}, facingMode: 'user'}
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
         });
         video.srcObject = stream;
         await video.play();
 
-        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-        
-        const detectorConfig = {
-          runtime: 'mediapipe',
-          solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4'
-        };
-        faceDetector = await window.FaceDetection.createDetector(
-          window.FaceDetection.SupportedModels.MediaPipeFaceDetector, detectorConfig
+        // Set canvas size
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        signalCanvas.width = 640;
+        signalCanvas.height = 180;
+
+        // Create face detector (MediaPipe BlazeFace)
+        faceDetector = await faceDetection.createDetector(
+          faceDetection.SupportedModels.MediaPipeFaceDetector,
+          {
+            runtime: 'mediapipe',
+            solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4',
+            modelType: 'short' // faster, good for frontal face
+          }
         );
 
-        document.querySelectorAll('button').forEach(b => b.disabled = b.id==='stopBtn');
-        rafId = requestAnimationFrame(() => processFrame());
+        // Enable buttons
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('stopBtn').disabled = false;
+        document.getElementById('analyzeBtn').disabled = false;
+
         document.getElementById('status').className = 'good';
         document.getElementById('status').textContent = '✅ Live tracking started!';
-      } catch(err) {
+
+        // Start processing
+        requestAnimationFrame(processFrame);
+      } catch (err) {
+        console.error(err);
         document.getElementById('status').className = 'error';
         document.getElementById('status').textContent = `❌ ${err.name}: ${err.message}`;
       }
     };
 
     document.getElementById('stopBtn').onclick = () => {
-      if (stream) stream.getTracks().forEach(t=>t.stop());
-      if (rafId) cancelAnimationFrame(rafId);
+      if (stream) stream.getTracks().forEach(t => t.stop());
       video.srcObject = null;
-      rppgBuffer = []; rawBuffer = [];
+      rppgBuffer = [];
+      rawBuffer = [];
+      faceDetector = null;
       document.getElementById('startBtn').disabled = false;
-      document.querySelectorAll('#stopBtn, #analyzeBtn').forEach(b=>b.disabled=true);
-      document.getElementById('status').className = ''; 
+      document.getElementById('stopBtn').disabled = true;
+      document.getElementById('analyzeBtn').disabled = true;
+      document.getElementById('status').className = '';
       document.getElementById('status').textContent = 'Stopped';
-      document.querySelectorAll('.stat-value').forEach(el=>el.textContent='--');
+      // Clear stats
+      document.querySelectorAll('.stat-value').forEach(el => el.textContent = '--');
+      // Clear canvases
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      signalCtx.clearRect(0, 0, signalCanvas.width, signalCanvas.height);
     };
 
     document.getElementById('analyzeBtn').onclick = () => {
@@ -432,10 +449,12 @@
         `📊 Analysis: SBP/DBP ${bp.sbp}/${bp.dbp} | HRV good (${vitals.sdnn}ms SDNN)`;
     };
 
-    // Elements
+    // Initialize
     video = document.getElementById('video');
-    canvas = document.getElementById('canvas'); ctx = canvas.getContext('2d');
-    signalCanvas = document.getElementById('signalCanvas'); signalCtx = signalCanvas.getContext('2d');
+    canvas = document.getElementById('canvas');
+    ctx = canvas.getContext('2d');
+    signalCanvas = document.getElementById('signalCanvas');
+    signalCtx = signalCanvas.getContext('2d');
   </script>
 </body>
 </html>

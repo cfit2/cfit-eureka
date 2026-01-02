@@ -6,9 +6,8 @@
   <title>rPPG BP + HR/HRV Estimator (Demo)</title>
   <!-- Load TensorFlow.js -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.18.0/dist/tf.min.js"></script>
-  <!-- Load TensorFlow.js Face Detection (wrapper) -->
+  <!-- Load TensorFlow.js Face Detection (exposes window.faceDetection) -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-detection@1.1.0/dist/face-detection.min.js"></script>
-  <!-- MediaPipe is loaded automatically as a dependency by face-detection -->
   <style>
     body { 
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
@@ -29,6 +28,7 @@
     .stat { background: rgba(255,255,255,0.2); padding: 15px; border-radius: 12px; }
     .stat-value { font-size: 2em; color: #ffd700; }
 
+    /* Button Row – Always in one line, scrollable on mobile */
     .button-row {
       display: flex;
       justify-content: center;
@@ -165,249 +165,273 @@
     let rppgBuffer = [], rawBuffer = [];
     const BUFFER_LEN = 900;  // 30s @30fps
     const FPS = 30;
-    const ROI_FRAC = {x:0.35, y:0.12, w:0.30, h:0.15};
+    const ROI_FRAC = {x: 0.35, y: 0.12, w: 0.30, h: 0.15};
 
     // CHROM extraction
     function extractCHROM(r, g, b) {
-      const X = 1.60*r + g, Y = g - 0.6*r, Z = b;
-      const norm = Math.sqrt(X*X + Y*Y + Z*Z);
-      return norm > 0 ? 3*(X/norm) - 2*(Y/norm) : 0;
+      const X = 1.60 * r + g, Y = g - 0.6 * r, Z = b;
+      const norm = Math.sqrt(X * X + Y * Y + Z * Z);
+      return norm > 0 ? 3 * (X / norm) - 2 * (Y / norm) : 0;
     }
 
     // Full preprocessing (detrend + smooth + bandpass IIR)
     function preprocessRPPG(rawSig) {
       if (rawSig.length < 20) return rawSig.slice();
 
-      // Detrend (local median subtraction)
+      // Detrend
       const detrend = [];
       const w = 15;
-      for (let i=0; i<rawSig.length; i++) {
-        let low=[], up=[];
-        for (let j=Math.max(0,i-w); j<=Math.min(rawSig.length-1,i+w); j++) {
-          if (j<i) low.push(rawSig[j]); else if (j>i) up.push(rawSig[j]);
+      for (let i = 0; i < rawSig.length; i++) {
+        let low = [], up = [];
+        for (let j = Math.max(0, i - w); j <= Math.min(rawSig.length - 1, i + w); j++) {
+          if (j < i) low.push(rawSig[j]);
+          else if (j > i) up.push(rawSig[j]);
         }
-        const lowMed = low.reduce((a,b)=>a+b,0)/low.length || rawSig[i];
-        const upMed = up.reduce((a,b)=>a+b,0)/up.length || rawSig[i];
-        detrend.push(rawSig[i] - (lowMed + upMed)/2);
+        const lowMed = low.length ? low.reduce((a, b) => a + b, 0) / low.length : rawSig[i];
+        const upMed = up.length ? up.reduce((a, b) => a + b, 0) / up.length : rawSig[i];
+        detrend.push(rawSig[i] - (lowMed + upMed) / 2);
       }
 
-      // Smooth MA
+      // Smooth
       const smooth = [];
-      for (let i=0; i<detrend.length; i++) {
-        let sum=0, cnt=0;
-        for (let j=Math.max(0,i-3); j<=Math.min(detrend.length-1,i+3); j++) { sum+=detrend[j]; cnt++; }
-        smooth.push(sum/cnt);
+      for (let i = 0; i < detrend.length; i++) {
+        let sum = 0, cnt = 0;
+        for (let j = Math.max(0, i - 3); j <= Math.min(detrend.length - 1, i + 3); j++) {
+          sum += detrend[j];
+          cnt++;
+        }
+        smooth.push(sum / cnt);
       }
 
-      // IIR bandpass 0.75-3Hz (Butterworth filtfilt coeffs)
+      // IIR bandpass 0.75–3 Hz
       const b = [0.04125, 0, -0.08251, 0, 0.04125];
       const a = [1, -3.182, 3.933, -2.258, 0.514];
       const filtered = new Array(smooth.length).fill(0);
-      
-      // Forward
-      for (let n=2; n<smooth.length; n++) {
-        let y = b[0]*smooth[n] + b[1]*(smooth[n-1]||0) + b[2]*(smooth[n-2]||0) +
-                b[3]*(smooth[n-3]||0) + b[4]*(smooth[n-4]||0) -
-                a[1]*filtered[n-1] - a[2]*filtered[n-2] -
-                a[3]*filtered[n-3] - a[4]*filtered[n-4];
+      for (let n = 2; n < smooth.length; n++) {
+        let y =
+          b[0] * smooth[n] +
+          (b[1] || 0) * (smooth[n - 1] || 0) +
+          (b[2] || 0) * (smooth[n - 2] || 0) +
+          (b[3] || 0) * (smooth[n - 3] || 0) +
+          (b[4] || 0) * (smooth[n - 4] || 0) -
+          a[1] * (filtered[n - 1] || 0) -
+          a[2] * (filtered[n - 2] || 0) -
+          a[3] * (filtered[n - 3] || 0) -
+          a[4] * (filtered[n - 4] || 0);
         filtered[n] = y;
       }
-      
-      // Backward
+
       const bandpass = new Array(filtered.length).fill(0);
-      bandpass[bandpass.length-1] = filtered[filtered.length-1];
-      for (let n=bandpass.length-2; n>=0; n--) {
-        let y = b[0]*filtered[n] + b[1]*(filtered[n+1]||0) + b[2]*(filtered[n+2]||0) +
-                b[3]*(filtered[n+3]||0) + b[4]*(filtered[n+4]||0) -
-                a[1]*bandpass[n+1] - a[2]*bandpass[n+2] -
-                a[3]*bandpass[n+3] - a[4]*bandpass[n+4];
+      bandpass[bandpass.length - 1] = filtered[filtered.length - 1];
+      for (let n = bandpass.length - 2; n >= 0; n--) {
+        let y =
+          b[0] * filtered[n] +
+          (b[1] || 0) * (filtered[n + 1] || 0) +
+          (b[2] || 0) * (filtered[n + 2] || 0) +
+          (b[3] || 0) * (filtered[n + 3] || 0) +
+          (b[4] || 0) * (filtered[n + 4] || 0) -
+          a[1] * (bandpass[n + 1] || 0) -
+          a[2] * (bandpass[n + 2] || 0) -
+          a[3] * (bandpass[n + 3] || 0) -
+          a[4] * (bandpass[n + 4] || 0);
         bandpass[n] = y;
       }
 
       // Normalize
-      const mean = bandpass.reduce((a,b)=>a+b,0)/bandpass.length;
+      const mean = bandpass.reduce((a, b) => a + b, 0) / bandpass.length;
       let varSum = 0;
-      for (let v of bandpass) varSum += (v-mean)**2;
-      const std = Math.sqrt(varSum/bandpass.length) || 1;
-      return bandpass.map(v => (v-mean)/std);
+      for (let v of bandpass) varSum += (v - mean) ** 2;
+      const std = Math.sqrt(varSum / bandpass.length) || 1;
+      return bandpass.map(v => (v - mean) / std);
     }
 
     // HR/HRV computation
     function computeVitals() {
-      if (rppgBuffer.length < 150) return {quality: 0};
+      if (rppgBuffer.length < 150) return { quality: 0 };
 
-      const sig = rppgBuffer.slice(-300);  // 10s
-      
-      // Autocorr HR
-      const N = sig.length, maxLag = Math.floor(FPS/0.75);
+      const sig = rppgBuffer.slice(-300);
+      const N = sig.length;
+      const maxLag = Math.floor(FPS / 0.75);
       const acf = new Array(maxLag).fill(0);
-      for (let lag=1; lag<maxLag; lag++) {
-        let sum=0;
-        for (let i=0; i<N-lag; i++) sum += sig[i]*sig[i+lag];
+
+      for (let lag = 1; lag < maxLag; lag++) {
+        let sum = 0;
+        for (let i = 0; i < N - lag; i++) sum += sig[i] * sig[i + lag];
         acf[lag] = sum;
       }
-      let maxAcf=0, hrPeak=1;
-      for (let lag=2; lag<maxLag; lag++) {
-        if (acf[lag]>maxAcf && lag>=FPS/3 && lag<=FPS/0.75) {
-          maxAcf = acf[lag]; hrPeak = lag;
+
+      let maxAcf = 0, hrPeak = 1;
+      for (let lag = Math.floor(FPS / 3); lag <= Math.floor(FPS / 0.75); lag++) {
+        if (acf[lag] > maxAcf) {
+          maxAcf = acf[lag];
+          hrPeak = lag;
         }
       }
-      const HR = Math.round(60 * FPS / hrPeak);
+      const HR = Math.round((60 * FPS) / hrPeak);
 
-      // Peak detection
       const peaks = [];
       const thresh = 0.4 * Math.max(...sig);
-      const ref = Math.floor(FPS/3);
+      const ref = Math.floor(FPS / 3);
       let lastPeak = -ref;
-      for (let i=5; i<sig.length-5; i++) {
-        if (sig[i]>thresh && i-lastPeak>ref && sig[i]>sig[i-1] && sig[i]>sig[i+1]) {
-          peaks.push(i/FPS);
+      for (let i = 5; i < sig.length - 5; i++) {
+        if (
+          sig[i] > thresh &&
+          i - lastPeak > ref &&
+          sig[i] > sig[i - 1] &&
+          sig[i] > sig[i + 1]
+        ) {
+          peaks.push(i / FPS);
           lastPeak = i;
         }
       }
 
-      if (peaks.length < 8) return {hr:HR, sdnn:0, rmssd:0, quality:0.4, peaks:peaks.length};
+      if (peaks.length < 8) return { hr: HR, sdnn: 0, rmssd: 0, quality: 40 };
 
-      // RR → HRV
       const rr = [];
-      for (let i=1; i<peaks.length; i++) {
-        const intv = (peaks[i]-peaks[i-1])*1000;
-        if (intv>400 && intv<2000) rr.push(intv);
+      for (let i = 1; i < peaks.length; i++) {
+        const intv = (peaks[i] - peaks[i - 1]) * 1000;
+        if (intv > 400 && intv < 2000) rr.push(intv);
       }
 
-      if (rr.length<5) return {hr:HR, sdnn:0, rmssd:0, quality:0.5, rr:rr.length};
+      if (rr.length < 5) return { hr: HR, sdnn: 0, rmssd: 0, quality: 50 };
 
-      const meanRR = rr.reduce((a,b)=>a+b)/rr.length;
-      let sdnnSq=0, rmsSq=0;
-      for (let i=1; i<rr.length; i++) {
-        const dev = rr[i]-meanRR; sdnnSq += dev*dev;
-        rmsSq += (rr[i]-rr[i-1])**2;
-      }
-      const SDNN = Math.sqrt(sdnnSq/rr.length);
-      const RMSSD = Math.sqrt(rmsSq/(rr.length-1));
-      const quality = Math.min(1, rr.length/20 * (maxAcf/(N*0.1)));
+      const meanRR = rr.reduce((a, b) => a + b, 0) / rr.length;
+      let sdnnSq = 0, rmsSq = 0;
+      for (let i = 0; i < rr.length; i++) sdnnSq += (rr[i] - meanRR) ** 2;
+      for (let i = 1; i < rr.length; i++) rmsSq += (rr[i] - rr[i - 1]) ** 2;
+
+      const SDNN = Math.sqrt(sdnnSq / rr.length);
+      const RMSSD = Math.sqrt(rmsSq / (rr.length - 1));
+      const quality = Math.min(100, Math.round((rr.length / 20) * 100));
 
       return {
-        hr: HR, sdnn: Math.round(SDNN), rmssd: Math.round(RMSSD),
-        quality: Math.round(quality*100), rrCount: rr.length
+        hr: HR,
+        sdnn: Math.round(SDNN),
+        rmssd: Math.round(RMSSD),
+        quality: quality,
+        rrCount: rr.length
       };
     }
 
-    // Toy BP model
+    // Toy BP estimator
     function estimateBP(vitals) {
-      if (vitals.quality < 50) return {sbp: '--', dbp: '--'};
-      const sbp = Math.round(95 + vitals.hr*0.4 + vitals.sdnn*0.1);
-      const dbp = Math.round(62 + vitals.hr*0.25 + vitals.rmssd*0.05);
-      return {sbp: Math.max(90, sbp), dbp: Math.max(60, dbp)};
+      if (vitals.quality < 50) return { sbp: '--', dbp: '--' };
+      const sbp = Math.round(95 + vitals.hr * 0.4 + vitals.sdnn * 0.1);
+      const dbp = Math.round(62 + vitals.hr * 0.25 + vitals.rmssd * 0.05);
+      return { sbp: Math.max(90, sbp), dbp: Math.max(60, dbp) };
     }
 
-    // Main loop
+    // Main processing loop
     async function processFrame() {
       ctx.drawImage(video, 0, 0);
-      if (!faceDetector) return;
-
-      const faces = await faceDetector.estimateFaces(video);
-      if (!faces.length) {
-        document.getElementById('status').className = 'warn'; 
-        document.getElementById('status').textContent = '👀 Face not detected';
+      if (!faceDetector) {
         requestAnimationFrame(processFrame);
         return;
       }
 
-      const face = faces[0].box;
-      const rx = face.xMin + ROI_FRAC.x * face.width;
-      const ry = face.yMin + ROI_FRAC.y * face.height;
-      const rw = ROI_FRAC.w * face.width;
-      const rh = ROI_FRAC.h * face.height;
+      try {
+        const faces = await faceDetector.estimateFaces(video);
+        if (!faces.length) {
+          document.getElementById('status').className = 'warn';
+          document.getElementById('status').textContent = '👀 Face not detected';
+          requestAnimationFrame(processFrame);
+          return;
+        }
 
-      const imgData = ctx.getImageData(rx, ry, rw, rh);
-      let r = 0, g = 0, b = 0, npix = 0;
-      const data = imgData.data;
-      for (let i = 0; i < data.length; i += 4) {
-        r += data[i];
-        g += data[i + 1];
-        b += data[i + 2];
-        npix++;
+        const face = faces[0].boundingBox;
+        const rx = face.xMin + ROI_FRAC.x * face.width;
+        const ry = face.yMin + ROI_FRAC.y * face.height;
+        const rw = ROI_FRAC.w * face.width;
+        const rh = ROI_FRAC.h * face.height;
+
+        const imgData = ctx.getImageData(rx, ry, rw, rh);
+        let r = 0, g = 0, b = 0, npix = 0;
+        const data = imgData.data;
+        for (let i = 0; i < data.length; i += 4) {
+          r += data[i];
+          g += data[i + 1];
+          b += data[i + 2];
+          npix++;
+        }
+        const chrom = extractCHROM(r / (npix * 255), g / (npix * 255), b / (npix * 255));
+
+        rawBuffer.push(chrom);
+        if (rawBuffer.length > 60) rawBuffer.shift();
+        const processed = preprocessRPPG(rawBuffer);
+        rppgBuffer.push(processed[processed.length - 1]);
+        if (rppgBuffer.length > BUFFER_LEN) rppgBuffer.shift();
+
+        // Draw ROI
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.strokeRect(rx, ry, rw, rh);
+
+        // Plot signal
+        signalCtx.clearRect(0, 0, signalCanvas.width, signalCanvas.height);
+        signalCtx.strokeStyle = '#00ff88';
+        signalCtx.lineWidth = 2;
+        signalCtx.beginPath();
+        const scale = 60;
+        const off = signalCanvas.height / 2;
+        for (let i = 0; i < rppgBuffer.length; i++) {
+          const x = (i / BUFFER_LEN) * signalCanvas.width;
+          const y = off - rppgBuffer[i] * scale;
+          if (i === 0) signalCtx.moveTo(x, y);
+          else signalCtx.lineTo(x, y);
+        }
+        signalCtx.stroke();
+
+        // Update vitals
+        const vitals = computeVitals();
+        if (vitals.quality > 0) {
+          document.getElementById('hr').textContent = vitals.hr;
+          document.getElementById('sdnn').textContent = vitals.sdnn;
+          document.getElementById('rmssd').textContent = vitals.rmssd;
+          document.getElementById('quality').textContent = vitals.quality;
+          document.getElementById('status').className = vitals.quality > 70 ? 'good' : 'warn';
+          document.getElementById('status').textContent = 
+            `✅ Tracking | Peaks: ${vitals.rrCount || 0} | Buffer: ${rppgBuffer.length}`;
+        }
+
+        requestAnimationFrame(processFrame);
+      } catch (err) {
+        console.error('Processing error:', err);
+        document.getElementById('status').className = 'error';
+        document.getElementById('status').textContent = `❌ Processing error: ${err.message}`;
+        requestAnimationFrame(processFrame);
       }
-      const chrom = extractCHROM(r / (npix * 255), g / (npix * 255), b / (npix * 255));
-
-      rawBuffer.push(chrom);
-      if (rawBuffer.length > 60) rawBuffer.shift();
-      const processed = preprocessRPPG(rawBuffer);
-      rppgBuffer.push(processed[processed.length - 1]);
-      if (rppgBuffer.length > BUFFER_LEN) rppgBuffer.shift();
-
-      // Draw ROI
-      ctx.strokeStyle = '#00ff88';
-      ctx.lineWidth = 4;
-      ctx.lineCap = 'round';
-      ctx.strokeRect(rx, ry, rw, rh);
-
-      // Signal plot
-      signalCtx.clearRect(0, 0, signalCanvas.width, signalCanvas.height);
-      signalCtx.strokeStyle = '#00ff88';
-      signalCtx.lineWidth = 2;
-      signalCtx.beginPath();
-      const scale = 60;
-      const off = signalCanvas.height / 2;
-      for (let i = 0; i < rppgBuffer.length; i++) {
-        const x = (i / BUFFER_LEN) * signalCanvas.width;
-        const y = off - rppgBuffer[i] * scale;
-        if (i === 0) signalCtx.moveTo(x, y);
-        else signalCtx.lineTo(x, y);
-      }
-      signalCtx.stroke();
-
-      // Live vitals
-      const vitals = computeVitals();
-      if (vitals.quality) {
-        document.getElementById('hr').textContent = vitals.hr;
-        document.getElementById('sdnn').textContent = vitals.sdnn;
-        document.getElementById('rmssd').textContent = vitals.rmssd;
-        document.getElementById('quality').textContent = vitals.quality;
-        document.getElementById('status').className = vitals.quality > 70 ? 'good' : 'warn';
-        document.getElementById('status').textContent = 
-          `✅ Tracking | Peaks: ${vitals.rrCount || 0} | Buffer: ${rppgBuffer.length}`;
-      }
-
-      requestAnimationFrame(processFrame);
     }
 
-    // Start camera and face detector
+    // Start button handler
     document.getElementById('startBtn').onclick = async () => {
       try {
-        // Request camera
         stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
         });
         video.srcObject = stream;
         await video.play();
 
-        // Set canvas size
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         signalCanvas.width = 640;
         signalCanvas.height = 180;
 
-        // Create face detector (MediaPipe BlazeFace)
-        faceDetector = await faceDetection.createDetector(
-          faceDetection.SupportedModels.MediaPipeFaceDetector,
+        // ✅ Corrected: Use window.faceDetection
+        faceDetector = await window.faceDetection.createDetector(
+          window.faceDetection.SupportedModels.MediaPipeFaceDetector,
           {
             runtime: 'mediapipe',
             solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4',
-            modelType: 'short' // faster, good for frontal face
+            modelType: 'short'
           }
         );
 
-        // Enable buttons
         document.getElementById('startBtn').disabled = true;
         document.getElementById('stopBtn').disabled = false;
         document.getElementById('analyzeBtn').disabled = false;
-
         document.getElementById('status').className = 'good';
         document.getElementById('status').textContent = '✅ Live tracking started!';
-
-        // Start processing
         requestAnimationFrame(processFrame);
       } catch (err) {
         console.error(err);
@@ -416,6 +440,7 @@
       }
     };
 
+    // Stop button
     document.getElementById('stopBtn').onclick = () => {
       if (stream) stream.getTracks().forEach(t => t.stop());
       video.srcObject = null;
@@ -427,13 +452,12 @@
       document.getElementById('analyzeBtn').disabled = true;
       document.getElementById('status').className = '';
       document.getElementById('status').textContent = 'Stopped';
-      // Clear stats
       document.querySelectorAll('.stat-value').forEach(el => el.textContent = '--');
-      // Clear canvases
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       signalCtx.clearRect(0, 0, signalCanvas.width, signalCanvas.height);
     };
 
+    // Analyze button
     document.getElementById('analyzeBtn').onclick = () => {
       const vitals = computeVitals();
       if (vitals.quality < 50) {
@@ -449,7 +473,7 @@
         `📊 Analysis: SBP/DBP ${bp.sbp}/${bp.dbp} | HRV good (${vitals.sdnn}ms SDNN)`;
     };
 
-    // Initialize
+    // Initialize canvas contexts
     video = document.getElementById('video');
     canvas = document.getElementById('canvas');
     ctx = canvas.getContext('2d');
